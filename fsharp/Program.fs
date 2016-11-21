@@ -50,7 +50,7 @@ module Tokenize =
     | _ -> None
 
     let rec (|IsText|_|) = function
-    | IsRegex "^\"([^\"]|\\\")*\"+" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
+    | IsRegex "^\"([^\"]|(\\\\\"))*\"" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
     | _ -> None
 
     let (|IsStrLiteral|_|) = function
