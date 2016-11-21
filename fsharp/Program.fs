@@ -13,18 +13,22 @@ module Tokenize =
     | Text of text : string
     | StrLiteral of value : string
     | List of exprs : Expr list
+    | Vector of exprs : Expr list
+    | HashMap of exprs : Expr list
     | Whitespace
 
     with 
         override expr.ToString () =
+            let getInnerExpression es = es |> Seq.choose (function Whitespace -> None | x -> Some x) |> Seq.map (fun x->x.ToString()) |> String.concat " "
+
             match expr with
             | Number value -> value.ToString()
             | Text text -> sprintf "\"%s\"" text
             | StrLiteral value -> value
             | Whitespace -> ""
-            | List es ->
-                es |> Seq.choose (function Whitespace -> None | x -> Some x) |> Seq.map (fun x->x.ToString()) |> String.concat " " |> sprintf "(%s)"
-
+            | List es ->  getInnerExpression es |> sprintf "(%s)" 
+            | Vector es -> getInnerExpression es |> sprintf "[%s]"
+            | HashMap es -> getInnerExpression es |> sprintf "{%s}"
 
     let tryRegex pattern s =
         Regex pattern
@@ -46,19 +50,14 @@ module Tokenize =
     | _ -> None
 
     let rec (|IsText|_|) = function
-    | IsRegex "^\"[^\"]*\"+" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
+    | IsRegex "^\"([^\"]|\\\")*\"+" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
     | _ -> None
 
     let (|IsStrLiteral|_|) = function
-    | IsChar '+' ch 
-    | IsChar '-' ch 
-    | IsChar '/' ch 
-    | IsChar '*' ch 
-        -> Some (ch.ToString() |> StrLiteral, 1)
-    | IsRegex "^[A-Za-z][A-Za-z0-9]*" (str, len) -> Some (str |> StrLiteral, len) 
+    | IsRegex "^[^\s\[\]{}('\"`,;)\r\n\s]+" (str, len) -> Some (str |> StrLiteral, len) 
     | _ -> None
     let (|IsWhitespace|_|) = function
-    | IsRegex "^[\s]+" (_, len) -> Some len
+    | IsRegex "^[\s,]+" (_, len) -> Some len
     | _ -> None
 
     let tokenize (s:string) : Expr list=
@@ -67,11 +66,17 @@ module Tokenize =
             | IsWhitespace len -> (Whitespace, len) |> Some
             | IsNumber (expr, len)
             | IsText (expr, len)
-            | IsStrLiteral (expr, len)
-            | IsList '(' ')' (expr, len)
+            | IsList '(' ')' List (expr, len)
+            | IsList '{' '}' HashMap (expr, len)
+            | IsList '[' ']' Vector (expr, len)
+            | IsToExtend '\'' "quote" (expr, len)            
+            | IsToExtend '~' "unquote" (expr, len)            
+            | IsToExtend '`' "quasiquote" (expr, len)            
+            | IsToExtend '@' "deref" (expr, len)            
+            | IsStrLiteral (expr, len)            
                  -> (expr, len) |> Some
             | _ -> None
-        and (|IsList|_|) startChar endChar s = 
+        and (|IsList|_|) startChar endChar expr s = 
             let (|T|) s =
                 let rec t' s curr =  
                     match tokenize' s with
@@ -79,8 +84,17 @@ module Tokenize =
                     | Some (expr, len) -> t' (s.Substring len) (expr::curr) 
                 t' s []
             match s with
-            | IsCharT startChar (T (es, IsCharT endChar rem)) -> (List es, s.Length - rem.Length) |> Some
+            | IsCharT startChar (T (es, IsCharT endChar rem)) -> (expr es, s.Length - rem.Length) |> Some
             | _ -> None
+        and (|IsToExtend|_|) char str s =
+            let (|T|_|) s =
+                match tokenize' s with
+                | None -> None
+                | Some (expr, len) -> Some (expr, len) 
+            match s with
+            | IsCharT char (T (e, len)) ->  (List [StrLiteral str; e], len + 1) |> Some
+            | _ -> None
+
 
         s |> List.unfold (fun str -> if String.IsNullOrEmpty str then None 
                                      else tokenize' str |> Option.map (fun (token, len)-> token, str.Substring len))
