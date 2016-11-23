@@ -39,6 +39,7 @@ module Tokenize =
 
     let (|IsChar|_|) ch str = if not <| String.IsNullOrEmpty str && str.[0] = ch then Some ch else None
     let (|IsCharT|_|) ch str = if not <| String.IsNullOrEmpty str && str.[0] = ch then Some <| str.Substring 1 else None
+    let (|IsStartingWith|_|) startsWith str = if not <| String.IsNullOrEmpty str && str.StartsWith startsWith then Some <| str.Substring startsWith.Length else None
     
     let (|IsRegex|_|) p s = tryRegex p s |> Option.map (fun i -> (s.Substring(0, i), i))
 
@@ -50,7 +51,7 @@ module Tokenize =
     | _ -> None
 
     let rec (|IsText|_|) = function
-    | IsRegex "^\"([^\"]|(\\\"))*\"" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
+    | IsRegex "^\"([^\"\\\\]|\\\\\")*\"" (str, len) -> (Text (str.Substring(1, str.Length - 2)), len) |> Some
     | _ -> None
 
     let (|IsStrLiteral|_|) = function
@@ -69,10 +70,11 @@ module Tokenize =
             | IsList '(' ')' List (expr, len)
             | IsList '{' '}' HashMap (expr, len)
             | IsList '[' ']' Vector (expr, len)
-            | IsToExtend '\'' "quote" (expr, len)            
-            | IsToExtend '~' "unquote" (expr, len)            
-            | IsToExtend '`' "quasiquote" (expr, len)            
-            | IsToExtend '@' "deref" (expr, len)            
+            | IsToExtend "'" "quote" (expr, len)            
+            | IsToExtend "~@" "splice-unquote" (expr, len)            
+            | IsToExtend "~" "unquote" (expr, len)            
+            | IsToExtend "`" "quasiquote" (expr, len)            
+            | IsToExtend "@" "deref" (expr, len)            
             | IsStrLiteral (expr, len)            
                  -> (expr, len) |> Some
             | _ -> None
@@ -86,13 +88,20 @@ module Tokenize =
             match s with
             | IsCharT startChar (T (es, IsCharT endChar rem)) -> (expr es, s.Length - rem.Length) |> Some
             | _ -> None
-        and (|IsToExtend|_|) char str s =
+        and (|IsToExtend|_|) startsWith str s =
             let (|T|_|) s =
                 match tokenize' s with
                 | None -> None
-                | Some (expr, len) -> Some (expr, len) 
+                | Some (expr, len) -> Some (expr, s.Substring len, len) 
+            let (|Ts|) s =
+                let rec t' s curr =  
+                    match tokenize' s with
+                    | None -> curr |> List.rev, s
+                    | Some (expr, len) -> t' (s.Substring len) (expr::curr) 
+                t' s []
             match s with
-            | IsCharT char (T (e, len)) ->  (List [StrLiteral str; e], len + 1) |> Some
+            | IsStartingWith startsWith (T (e, _, len)) ->  (List [StrLiteral str; e], len + 1) |> Some
+            | IsStartingWith "^" (T (es, (Ts(list, len2)), len)) ->  (List ([StrLiteral "with-meta"] @ list @ [es]), s.Length - len2.Length) |> Some
             | _ -> None
 
 
