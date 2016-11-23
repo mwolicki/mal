@@ -23,6 +23,7 @@ type Expr =
             | Vector es -> getInnerExpression es |> sprintf "[%s]"
             | HashMap es -> getInnerExpression es |> sprintf "{%s}"
 
+type Env = Map<string, Expr>
 
 module Eval =
     let mathOp = 
@@ -37,22 +38,53 @@ module Eval =
         match es with
         | StrLiteral ch :: AllAreNumbers num -> 
             match mathOp.TryFind ch with
-            | Some op -> 
-                num |> List.reduce op |> (Number >> Some)
+            | Some op -> num |> List.reduce op |> (Number >> Some)
             | None -> None
             
         | _ -> None
-    let rec eval es = 
-        let evalNested ctor es =
-            let es = List.map eval es
-            match es with 
-            | CanEvalMath es -> es
-            | _ -> ctor es
+    let rec eval (env:Env) es : (Expr*Env) = 
+        let evalNested ctor es : (Expr*Env)=
+            
+            let (|Args|) es = 
+                let rec args env = function
+                | StrLiteral arg :: value :: xs -> 
+                    let value = eval env value |> fst
+                    let env = env.Add (arg, value)
+                    args env xs
+                | [] -> env
+                | x -> failwithf "Wrong number of attributes (leftover %A)" x
+                args env es
+
+            let (|CanEvalToConst|_|) e =
+                match eval env e |> fst with
+                | Number _
+                | Text _ as e -> Some e
+                | _ -> None
+
+            match es with
+            | StrLiteral "def!" :: StrLiteral name :: [CanEvalToConst value] ->
+                let value = eval env value |> fst
+                value, (env.Add (name, value))
+            | StrLiteral "let*" :: List (Args localEnv) :: [expr]
+            | StrLiteral "let*" :: Vector (Args localEnv) :: [expr]  ->                
+                eval localEnv expr |> fst, env
+            | _ -> 
+                let mutable env = env
+                let es = [for e in es do 
+                            let expr, envirement = eval env e
+                            env<-envirement
+                            yield expr ]
+                match es with 
+                | CanEvalMath es -> es, env
+                | _ -> ctor es, env
             
         match es with
         | Number _
-        | Text _
-        | StrLiteral _ as x -> x
+        | Text _ as x -> x, env
+        | StrLiteral x as e ->
+            match env.TryFind x with
+            | Some e -> e, env
+            | None -> e, env
         | Exprs es -> evalNested Exprs es
         | HashMap es -> evalNested HashMap es
         | List es -> evalNested List es
@@ -163,22 +195,22 @@ module Tokenize =
                                      else tokenize' str |> Option.map (fun (token, len)-> token, str.Substring len))
         |> toExpr
         |> Exprs                   
-let rec repl () : unit =
+let rec repl env : unit =
     printf "user> "
 
     match Console.ReadLine () with
     | "#quit" | "#q" -> ()
-    | cmd -> 
+    | cmd ->
+        let mutable env2 = env
         try
-            Tokenize.tokenize cmd 
-            |> Eval.eval
-            |> fun x->x.ToString()
-            |> printfn "%s"
+            let expr, env = Tokenize.tokenize cmd |> Eval.eval env
+            env2<-env
+            expr.ToString() |> printfn "%s"
         with e -> printfn "Exception %O" e
-        repl ()
+        repl env2       
 
 
 [<EntryPoint>]
 let main argv =
-    repl ()
+    repl Map.empty
     0 // return an integer exit code
