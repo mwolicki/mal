@@ -20,7 +20,6 @@ module Tokenize =
     with 
         override expr.ToString () =
             let getInnerExpression es = es |> Seq.choose (function Whitespace -> None | x -> Some x) |> Seq.map (fun x->x.ToString()) |> String.concat " "
-
             match expr with
             | Number value -> value.ToString()
             | Text text -> sprintf "\"%s\"" text
@@ -34,20 +33,17 @@ module Tokenize =
         Regex pattern
         |> fun x -> x.Match s
         |> fun m -> 
-            if m.Success then Some m.Length
-            else None
+            if m.Success then Some m.Length else None
 
-    let (|IsChar|_|) ch str = if not <| String.IsNullOrEmpty str && str.[0] = ch then Some ch else None
-    let (|IsCharT|_|) ch str = if not <| String.IsNullOrEmpty str && str.[0] = ch then Some <| str.Substring 1 else None
+    let (|IsChar|_|) ch str = if not <| String.IsNullOrEmpty str && str.[0] = ch then Some <| str.Substring 1 else None
     let (|IsStartingWith|_|) startsWith str = if not <| String.IsNullOrEmpty str && str.StartsWith startsWith then Some <| str.Substring startsWith.Length else None
-    
     let (|IsRegex|_|) p s = tryRegex p s |> Option.map (fun i -> (s.Substring(0, i), i))
 
     let rec (|IsNumber|_|) = function
     | IsRegex "^[-]{0,1}[0-9]+" (str, len) -> 
         match Int32.TryParse str with
-        | (true, value) -> (Number value, len) |> Some
-        | (false, _) -> None
+        | true, value -> (Number value, len) |> Some
+        | false, _ -> None
     | _ -> None
 
     let rec (|IsText|_|) = function
@@ -63,47 +59,48 @@ module Tokenize =
 
     let tokenize (s:string) : Expr list=
         let rec tokenize' s = 
+            let (|IsNested|_|) s =
+                let (|NestedExpression|_|) (s:string) =
+                    match tokenize' s with
+                    | None -> None
+                    | Some (expr, len) -> Some (expr, s.Substring len, len) 
+                let (|NestedExpresions|) =
+                    let rec t' curr =  function
+                    | NestedExpression (expr, remaining, _) -> t' (expr::curr) remaining                 
+                    | s -> curr |> List.rev, s
+                    t' []
+                let (|IsBracket|_|) startChar endChar expr s =
+                    match s with
+                    | IsChar startChar (NestedExpresions (es, IsChar endChar rem)) -> (expr es, s.Length - rem.Length) |> Some
+                    | _ -> None
+                let (|IsExtendable|_|) startsWith str s =
+                    match s with
+                    | IsStartingWith startsWith (NestedExpression (e, _, len)) ->  (List [StrLiteral str; e], len + 1) |> Some
+                    | _ -> None
+                
+                match s with
+                | IsBracket '(' ')' List (expr, len)
+                | IsBracket '{' '}' HashMap (expr, len)
+                | IsBracket '[' ']' Vector (expr, len)
+                | IsExtendable "'" "quote" (expr, len)         
+                | IsExtendable "~@" "splice-unquote" (expr, len)           
+                | IsExtendable "~" "unquote" (expr, len)
+                | IsExtendable "`" "quasiquote" (expr, len)          
+                | IsExtendable "@" "deref" (expr, len)                
+                    -> Some (expr, len)
+                | IsStartingWith "^" (NestedExpression (vector, (NestedExpresions(es, rem)), _)) -> 
+                    (List ([StrLiteral "with-meta"] @ es @ [vector]), s.Length - rem.Length) |> Some
+                |_ -> None
+
             match s with
             | IsWhitespace len -> (Whitespace, len) |> Some
             | IsNumber (expr, len)
             | IsText (expr, len)
-            | IsList '(' ')' List (expr, len)
-            | IsList '{' '}' HashMap (expr, len)
-            | IsList '[' ']' Vector (expr, len)
-            | IsToExtend "'" "quote" (expr, len)            
-            | IsToExtend "~@" "splice-unquote" (expr, len)            
-            | IsToExtend "~" "unquote" (expr, len)            
-            | IsToExtend "`" "quasiquote" (expr, len)            
-            | IsToExtend "@" "deref" (expr, len)            
+            | IsNested (expr, len)      
             | IsStrLiteral (expr, len)            
+      
                  -> (expr, len) |> Some
             | _ -> None
-        and (|IsList|_|) startChar endChar expr s = 
-            let (|T|) s =
-                let rec t' s curr =  
-                    match tokenize' s with
-                    | None -> curr |> List.rev, s
-                    | Some (expr, len) -> t' (s.Substring len) (expr::curr) 
-                t' s []
-            match s with
-            | IsCharT startChar (T (es, IsCharT endChar rem)) -> (expr es, s.Length - rem.Length) |> Some
-            | _ -> None
-        and (|IsToExtend|_|) startsWith str s =
-            let (|T|_|) s =
-                match tokenize' s with
-                | None -> None
-                | Some (expr, len) -> Some (expr, s.Substring len, len) 
-            let (|Ts|) s =
-                let rec t' s curr =  
-                    match tokenize' s with
-                    | None -> curr |> List.rev, s
-                    | Some (expr, len) -> t' (s.Substring len) (expr::curr) 
-                t' s []
-            match s with
-            | IsStartingWith startsWith (T (e, _, len)) ->  (List [StrLiteral str; e], len + 1) |> Some
-            | IsStartingWith "^" (T (es, (Ts(list, len2)), len)) ->  (List ([StrLiteral "with-meta"] @ list @ [es]), s.Length - len2.Length) |> Some
-            | _ -> None
-
 
         s |> List.unfold (fun str -> if String.IsNullOrEmpty str then None 
                                      else tokenize' str |> Option.map (fun (token, len)-> token, str.Substring len))
