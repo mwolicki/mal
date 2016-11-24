@@ -11,6 +11,7 @@ type Expr =
     | Exprs of exprs : Expr list
     | Vector of exprs : Expr list
     | HashMap of exprs : Expr list
+    | Function of args : string list * expr:Expr
 
     with override expr.ToString () =
             let getInnerExpression es = es |> Seq.map (fun x->x.ToString()) |> String.concat " "
@@ -22,6 +23,7 @@ type Expr =
             | List es -> getInnerExpression es |> sprintf "(%s)" 
             | Vector es -> getInnerExpression es |> sprintf "[%s]"
             | HashMap es -> getInnerExpression es |> sprintf "{%s}"
+            | Function _ -> "#<function>"
 
 type Env = Map<string, Expr>
 
@@ -45,6 +47,13 @@ module Eval =
     let rec eval (env:Env) es : (Expr*Env) = 
         let evalNested ctor es : (Expr*Env)=
             
+            let (|FuncArgs|_|) es = 
+                let rec args curr = function
+                | StrLiteral arg :: xs -> args (arg :: curr) xs
+                | [] ->Some curr
+                | _ -> None
+                args [] es
+
             let (|Args|) es = 
                 let rec args env = function
                 | StrLiteral arg :: value :: xs -> 
@@ -68,6 +77,9 @@ module Eval =
             | StrLiteral "let*" :: List (Args localEnv) :: [expr]
             | StrLiteral "let*" :: Vector (Args localEnv) :: [expr]  ->                
                 eval localEnv expr |> fst, env
+            | StrLiteral "fn*" :: Vector (FuncArgs args) :: [expr] ->
+                let value = Function (args, expr)
+                value, env
             | _ -> 
                 let mutable env = env
                 let es = [for e in es do 
@@ -76,10 +88,15 @@ module Eval =
                             yield expr ]
                 match es with 
                 | CanEvalMath es -> es, env
+                | [Function ([], e)] -> e, env
+                | Function (a::args, e) :: p :: ps ->
+                    let localEnv = env.Add (a, p)
+                    ([Function(args, eval localEnv e |> fst)] @ ps |> List |> eval localEnv |> fst), env
                 | _ -> ctor es, env
             
         match es with
         | Number _
+        | Function _ 
         | Text _ as x -> x, env
         | StrLiteral x as e ->
             match env.TryFind x with
