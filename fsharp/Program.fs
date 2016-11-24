@@ -67,6 +67,7 @@ module Eval =
             let (|CanEvalToConst|_|) e =
                 match eval env e |> fst with
                 | Number _
+                | Function _
                 | Text _ as e -> Some e
                 | _ -> None
 
